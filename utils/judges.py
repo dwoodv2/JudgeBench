@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import List, Dict, Any, Optional, Tuple, Union
+from typing import Dict, Any, Optional, Tuple, Union
 import re
 
 import utils.prompts as prompts

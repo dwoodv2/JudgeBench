@@ -12,8 +12,8 @@ import os
 import backoff
 import openai
 import anthropic
-
-
+from google import genai
+from google.genai import types
 class ChatAPI(ABC):
 
     @abstractmethod
@@ -85,42 +85,36 @@ class AnthropicAPI(ChatAPI):
         return response.content[0].text
 
 
-class GeminiAPI(OpenAIAPI):
-    """Google Gemini API.
-    
-    Models include gemini-1.5-pro-001 etc.
-    """
+
+# Assuming ChatAPI is imported from your base module
+# from your_module import ChatAPI 
+
+class GeminiAPI(ChatAPI):
+
     def __init__(self, model: str):
-        import google.auth
-        import google.auth.transport.requests
+        self.model_name = model
+        self.client = genai.Client(api_key=os.getenv("GEMINI_API_KEY")) # reads GEMINI_API_KEY from env
 
-        # Programmatically get an access token, need to setup your google cloud account properly,
-        # and get `gcloud auth application-default login` to be run first
-        creds, _project = google.auth.default()
-        auth_req = google.auth.transport.requests.Request()
-        creds.refresh(auth_req)
-        # Note: the credential lives for 1 hour by default (https://cloud.google.com/docs/authentication/token-types#at-lifetime); after expiration, it must be refreshed.
-
-        project_id = creds.quota_project_id
-        # Pass the Vertex endpoint and authentication to the OpenAI SDK
-        self.model = f"google/{model}"
-        self.client = openai.AsyncClient(
-            base_url=f"https://us-central1-aiplatform.googleapis.com/v1beta1/projects/{project_id}/locations/us-central1/endpoints/openapi",
-            api_key=creds.token,
-        )
-
-    @backoff.on_exception(backoff.fibo, (openai.OpenAIError), max_tries=10, max_value=30)
+    @backoff.on_exception(backoff.fibo, Exception, max_tries=5, max_value=30)
     async def chat(self, messages: List[Dict[str, str]], **kwargs) -> str:
-        response = await self.client.chat.completions.create(
-            model=self.model,
-            messages=messages,
-            **kwargs,
+
+        system_instruction = next(
+            (msg["content"] for msg in messages if msg["role"] == "system"), 
+            None
         )
-        message = response.choices[0].message
-        if message is None:
-            # This happens for Google Gemini under high concurrency
-            raise openai.OpenAIError("No response from Google Gemini")
-        return message.content
+        
+        user_message = messages[-1]["content"]
+
+
+        response = self.client.models.generate_content(
+            model=self.model_name,
+            contents=user_message, 
+            config=types.GenerateContentConfig(
+                system_instruction=system_instruction
+            )
+        )
+
+        return response.text
 
 
 class TogetherAPI(ChatAPI):
@@ -146,7 +140,7 @@ class LocalAPI(ChatAPI):
 
     def __init__(self, model: str):
         self.model = model
-        self.client = openai.AsyncClient(base_url="http://localhost:8000/v1", api_key="EMPTY")
+        self.client = openai.AsyncClient(base_url="http://localhost:4141/v1", api_key="EMPTY")
 
     @backoff.on_exception(backoff.fibo, (openai.OpenAIError), max_tries=5, max_value=30)
     async def chat(self, messages: List[Dict[str, str]], **kwargs) -> str:
@@ -168,11 +162,13 @@ class LocalAPI(ChatAPI):
 
 
 def get_chat_api_from_model(model: str) -> ChatAPI:
+    # to use LocalAPI, it must be a valid hugging face model name 
+    # e.g. `org/modelname` (e.g. `google/gemma-4-E4B`)
     if model.startswith("gpt") or model.startswith("o1"):
         return OpenAIAPI(model)
     if model.startswith("claude"):
         return AnthropicAPI(model)
-    if model.startswith("gemini"):
+    if model.startswith("gemini") or model.startswith("gemma"):
         return GeminiAPI(model)
     if model == "meta-llama/Meta-Llama-3.1-405B-Instruct":
         return TogetherAPI(model + "-turbo")

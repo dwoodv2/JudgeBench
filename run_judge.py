@@ -12,13 +12,16 @@ import utils.judges as judges
 import utils.metrics as metrics
 
 
-async def judge_pairs(pairs: List[Dict[str, Any]], judge_name: str, judge_model: str, concurrency_limit: int = 1, reverse_order: int = False, output_file: str = None):
+async def judge_pairs(pairs: List[Dict[str, Any]], judge_name: str, judge_model: str, concurrency_limit: int = 1, reverse_order: int = False, output_file: str = None, rate_limit_throttle: float = 0.0) -> List[Dict[str, Any]]:
     semaphore = asyncio.Semaphore(concurrency_limit)
     judge = judges.get_judge_from_judge_name_and_model(judge_name, judge_model)
     file_lock = asyncio.Lock()
     
     async def judge_pair(pair: Dict[str, Any]):
         async with semaphore:
+            # throttle to avoid rate limits, if specified
+            if rate_limit_throttle > 0:
+                await asyncio.sleep(rate_limit_throttle)
             
             question = pair["question"]
             response_A = pair["response_A"]
@@ -73,8 +76,7 @@ def main(args: argparse.Namespace) -> None:
         existing_pair_ids = {pair["pair_id"] for pair in existing_pairs}
         pairs = [pair for pair in pairs if pair["pair_id"] not in existing_pair_ids]
         print(f"Skipped {original_num_pairs - len(pairs)} pairs.")
-
-
+        
     if pairs: 
         print("Judging pairs ...")
         pairs = asyncio.run(
@@ -85,6 +87,7 @@ def main(args: argparse.Namespace) -> None:
                 reverse_order=not args.single_game,
                 concurrency_limit=args.concurrency_limit,
                 output_file=file_path,
+                rate_limit_throttle=args.throttle
             )
         )
 
@@ -104,5 +107,6 @@ if __name__ == "__main__":
     parser.add_argument('--seed', type=int, default=42) # seed to use.
     parser.add_argument('--concurrency_limit', type=int, default=1) # We use asyncio to speed things up, 10 is usally a good value here.
     parser.add_argument('--pairs', type=str, required=True) # path to jsonl containing pairs for judging
+    parser.add_argument('--throttle', type=float, default=0.0) # time (in seconds) to wait between each judge call, to avoid rate limits.
     args = parser.parse_args()
     main(args)
